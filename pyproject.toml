@@ -1,5 +1,5 @@
 [tool.poetry]
-name = "django-droplet-deploy"
+name = "dj-droplet"
 version = "0.1.0"
 description = "A python package to deploy django projects to digital ocean droplet."
 authors = ["prajeeshag <prajeeshag@gmail.com>"]
@@ -7,11 +7,20 @@ license = "MIT"
 
 [tool.poetry.dependencies]
 python = "^3.9"
-doctl = "^0.2.3"
 paramiko = "^2.8.1"
+PyYAML = "^6.0"
+PyInquirer = "^1.0.3"
+maya = "^0.6.1"
+"delegator.py" = "^0.1.1"
+py-doctl = {git = "https://github.com/prajeeshag/py-doctl.git", rev = "main"}
+requests = "^2.26.0"
+GitPython = "^3.1.24"
 
 [tool.poetry.dev-dependencies]
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.poetry.scripts]
+dj_droplet = 'dj_droplet.droplet:main'
