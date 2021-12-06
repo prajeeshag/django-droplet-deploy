@@ -3,7 +3,7 @@ import os
 
 from examples import custom_style_1, custom_style_2, custom_style_3
 from PyInquirer import prompt, Separator
-from prompt_toolkit.styles import defaults
+import dotenv
 
 exclude = ['.git', '__pycache__', 'templates', 'static', 'node_modules']
 ENV_DEFAULTS = {
@@ -13,21 +13,6 @@ ENV_DEFAULTS = {
     'DATABASE_URL': 'postgres://dbuser:dbpasswd@localhost/db',
     'ALLOWED_HOSTS': '${DOMAIN_NAME},${IPADDR}'
 }
-
-
-def find_env_var_defaults():
-    """ Go through .env file for the default values for the environment variables"""
-    envfile = find('.env', '.')
-    envdefaults = {}
-    if not envfile:
-        return {}
-    with open(envfile, 'r') as f:
-        for line in f.readlines():
-            res = extract_env_var(line)
-            if not res:
-                continue
-            envdefaults[res[0]] = res[1]
-    return envdefaults
 
 
 def override_env_var_defaults(vars, defaults):
@@ -67,9 +52,9 @@ def find(name, path):
             return os.path.join(root, name)
 
 
-def find_env_vars():
+def find_env_vars(path='.'):
     env_vars = []
-    for (root, dirs, files) in os.walk('.', topdown=True):
+    for (root, dirs, files) in os.walk(path, topdown=True):
         dirs[:] = [d for d in dirs if d not in exclude]
         dirs[:] = [d for d in dirs if d[0] != '.']
         dirs[:] = [d for d in dirs if os.path.isfile(
@@ -110,12 +95,26 @@ def find_env_vars_from_line(line):
     return [line1[strt:end]]
 
 
-def get_env_vars():
-    envvars = find_env_vars()
-    envvardefaults = find_env_var_defaults()
-    envvars.update(envvardefaults)
+def get_env_vars(path='.'):
+    envvars = find_env_vars(path)
+    envdot = values_from_dotenv()
+    envvars.update(envdot)
     override_env_var_defaults(envvars, ENV_DEFAULTS)
     return envvars
+
+
+def values_from_dotenv():
+    ques = [
+        {
+            'type': 'input',
+            'message': f' \n Enter .env file path (leave empty to skip)',
+            'name': 'envfile',
+        }
+    ]
+    ans = prompt(ques, style=custom_style_1)
+    if ans['envfile']:
+        return dotenv.dotenv_values(ans['envfile'])
+    return {}
 
 
 def get_env_val_from_user(var, default=''):
@@ -133,7 +132,7 @@ def get_env_val_from_user(var, default=''):
 
 def build_env_list_choices(vars):
     choices = [
-        {'name': 'Save and Exit', 'value': 'save'},
+        {'name': 'Save and Continue..', 'value': 'save'},
         {'name': 'Exit', 'value': 'quit'},
         Separator(),
     ]
@@ -160,15 +159,17 @@ def list_edit_env_var(vars, default=None):
     return ans['response']
 
 
-if __name__ == "__main__":
-
-    envd = get_env_vars()
+def edit_env_vars(envd):
     res = 'save'
     while True:
         res = list_edit_env_var(envd, default=res)
         if res == 'quit':
-            exit()
+            return 'quit'
         elif res == 'save':
-            print(envd)
-            exit()
+            return 'save'
         envd[res] = get_env_val_from_user(res, envd[res])
+
+
+if __name__ == "__main__":
+    envd = get_env_vars()
+    edit_env_vars(envd)

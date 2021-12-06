@@ -6,17 +6,19 @@ authors = ["prajeeshag <prajeeshag@gmail.com>"]
 license = "MIT"
 
 [tool.poetry.dependencies]
-python = "^3.9"
+python = "^3.7"
 paramiko = "^2.8.1"
 PyYAML = "^6.0"
-PyInquirer = "^1.0.3"
 maya = "^0.6.1"
 "delegator.py" = "^0.1.1"
 py-doctl = {git = "https://github.com/prajeeshag/py-doctl.git", rev = "main"}
 requests = "^2.26.0"
 GitPython = "^3.1.24"
+python-dotenv = "^0.19.2"
+PyInquirer = "^1.0.3"
 
 [tool.poetry.dev-dependencies]
+autopep8 = "^1.6.0"
 
 [build-system]
 requires = ["poetry-core>=1.0.0"]

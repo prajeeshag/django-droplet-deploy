@@ -1,8 +1,10 @@
+from os import name
 from PyInquirer import prompt, Separator
 from examples import custom_style_1, custom_style_2, custom_style_3
 from prompt_toolkit.validation import ValidationError, Validator
 import py_doctl as doctl
 from py_doctl import DOCtlError
+import socket
 
 
 class MultipleItemException(Exception):
@@ -230,34 +232,6 @@ def droplet_exists(name):
     return True
 
 
-q_create_droplet = [
-    {
-        'type': 'list',
-        'name': 'image',
-        'message': 'Choose a distribution image for your droplet:',
-        'choices': image_choices,
-    },
-    {
-        'type': 'list',
-        'name': 'region',
-        'message': 'Choose a region for your droplet:',
-        'choices': region_choices,
-    },
-    {
-        'type': 'list',
-        'name': 'size',
-        'message': 'Choose a size for your droplet:',
-        'choices': size_choices,
-    },
-    {
-        'type': 'input',
-        'name': 'name',
-        'message': 'Enter a name for your droplet:',
-        'validate': droplet_name_validate,
-    }
-]
-
-
 def choose_droplet():
     def choices(ans):
         return [
@@ -294,10 +268,114 @@ def show_droplet_details():
 
 
 def create_droplet():
-    answers = prompt(q_create_droplet, style=custom_style_1)
-    args = {key: str(value) for key, value in answers.items()}
-    return Droplet.objects().create(**args)
+    ques = [
+        {
+            'type': 'list',
+            'name': 'image',
+            'message': 'Choose a distribution image for your droplet:',
+            'choices': image_choices,
+        },
+        {
+            'type': 'list',
+            'name': 'region',
+            'message': 'Choose a region for your droplet:',
+            'choices': region_choices,
+        },
+        {
+            'type': 'list',
+            'name': 'size',
+            'message': 'Choose a size for your droplet:',
+            'choices': size_choices,
+        },
+        {
+            'type': 'input',
+            'name': 'name',
+            'message': 'Enter a name for your droplet:',
+            'validate': droplet_name_validate,
+        }
+    ]
+
+    ssh_keys = [item['id'] for item in get_ssh_keys()]
+    answers = prompt(ques, style=custom_style_1)
+    kwargs = {key: str(value) for key, value in answers.items()}
+    return Droplet.objects().create(**kwargs, ssh_keys=ssh_keys)
+
+
+doctl.compute.droplet.create
+
+
+def import_ssh_key():
+    ques = [
+        {
+            'type': 'input',
+            'message': 'Enter the path of ssh public key file',
+            'name': 'keyfile',
+            'validate': lambda x: len(x) > 0,
+            'default': '~/.ssh/id_rsa.pub',
+        },
+        {
+            'type': 'input',
+            'message': 'Enter a name for your ssh key',
+            'name': 'name',
+            'validate': lambda x: len(x) > 0,
+            'default': socket.gethostname(),
+        }
+    ]
+    ans = prompt(ques)
+    return doctl.compute.ssh_key._import(ans['name'], ans['keyfile'])
+
+
+def select_ssh_keys(sshkeys, selectedKeys=[]):
+    choices = [{'name': item['name'], 'value':item,
+                'checked': item in selectedKeys} for item in sshkeys]
+    ques = [
+        {
+            'type': 'checkbox',
+            'message': 'Select the SSH keys to be added to your droplet',
+            'name': 'keys',
+            'choices': choices,
+        }
+    ]
+    ans = prompt(ques)
+    return ans['keys']
+
+
+def get_ssh_keys():
+    message1 = '--- Choose SSH keys ---'
+    message2 = ''
+    message3 = ''
+    sshkeyselected = []
+    choices = [{'name': 'Import a new ssh key to you DO account', 'value': 'import'},
+               {'name': 'Select from already existing ssh keys', 'value': 'select'},
+               {'name': 'Continue', 'value': 'continue'}]
+
+    while True:
+        sshkeysall = doctl.compute.ssh_key.list()
+        if sshkeyselected:
+            message2 = ' (Selected: ' + \
+                ', '.join(
+                    [f"{item['name']}" for item in sshkeyselected]) + ')'
+
+        ques = [
+            {
+                'type': 'list',
+                'name': 'choice',
+                'message': message1+message2+message3,
+                'choices': choices
+            }
+        ]
+        ans = prompt(ques, answers={'keys': sshkeyselected})
+        if ans['choice'] == 'import':
+            sshkeyselected += [import_ssh_key()]
+        if ans['choice'] == 'select':
+            sshkeyselected += select_ssh_keys(sshkeysall,
+                                              selectedKeys=sshkeyselected)
+        if ans['choice'] == 'continue':
+            if sshkeyselected:
+                return sshkeyselected
+            else:
+                message3 = ' You need to choose atleast one ssh keys to continue!!!'
 
 
 if __name__ == "__main__":
-    choose_droplet()
+    print(get_ssh_keys())
