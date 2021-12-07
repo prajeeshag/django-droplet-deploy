@@ -8,7 +8,6 @@ import git
 from git.exc import InvalidGitRepositoryError, GitCommandError
 import tempfile
 import logging
-from dotenv import dotenv_values
 
 logger = logging.getLogger(__name__)
 

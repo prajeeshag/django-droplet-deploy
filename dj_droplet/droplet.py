@@ -1,4 +1,5 @@
-from os import name
+import sys
+import time
 from PyInquirer import prompt, Separator
 from examples import custom_style_1, custom_style_2, custom_style_3
 from prompt_toolkit.validation import ValidationError, Validator
@@ -175,10 +176,6 @@ class Size(DoCtl):
         )
 
 
-def get_droplet(id):
-    pass
-
-
 def image_choices(ans):
     return [
         {'name': item.display_name,
@@ -298,10 +295,16 @@ def create_droplet():
     ssh_keys = [item['id'] for item in get_ssh_keys()]
     answers = prompt(ques, style=custom_style_1)
     kwargs = {key: str(value) for key, value in answers.items()}
-    return Droplet.objects().create(**kwargs, ssh_keys=ssh_keys)
-
-
-doctl.compute.droplet.create
+    droplet = Droplet.objects().create(**kwargs, ssh_keys=ssh_keys)
+    print("Droplet created...\n")
+    print('Waiting to get IPPADDR of the droplet... ')
+    i = 0
+    while not droplet.publicIp4:
+        time.sleep(5)
+        i += 1
+        print(f'{i}')
+        droplet = Droplet.objects().get(droplet['id'])
+    return droplet
 
 
 def import_ssh_key():
@@ -345,9 +348,11 @@ def get_ssh_keys():
     message2 = ''
     message3 = ''
     sshkeyselected = []
-    choices = [{'name': 'Import a new ssh key to you DO account', 'value': 'import'},
-               {'name': 'Select from already existing ssh keys', 'value': 'select'},
-               {'name': 'Continue', 'value': 'continue'}]
+    choices = [
+        {'name': 'Continue', 'value': 'continue'},
+        {'name': 'Import a new ssh key to you DO account', 'value': 'import'},
+        {'name': 'Select from already existing ssh keys', 'value': 'select'},
+    ]
 
     while True:
         sshkeysall = doctl.compute.ssh_key.list()
@@ -355,6 +360,7 @@ def get_ssh_keys():
             message2 = ' (Selected: ' + \
                 ', '.join(
                     [f"{item['name']}" for item in sshkeyselected]) + ')'
+            message3 = ''
 
         ques = [
             {
@@ -374,7 +380,7 @@ def get_ssh_keys():
             if sshkeyselected:
                 return sshkeyselected
             else:
-                message3 = ' You need to choose atleast one ssh keys to continue!!!'
+                message3 = ' You need to choose atleast one ssh keys to continue !!!'
 
 
 if __name__ == "__main__":

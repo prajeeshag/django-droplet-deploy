@@ -4,8 +4,8 @@ import os
 from examples import custom_style_1, custom_style_2, custom_style_3
 from PyInquirer import prompt, Separator
 import dotenv
+from .util import find, exclude
 
-exclude = ['.git', '__pycache__', 'templates', 'static', 'node_modules']
 ENV_DEFAULTS = {
     'DEBUG': 'False',
     'DEVMODE': 'False',
@@ -40,16 +40,6 @@ def strip_quote(string):
             string.startswith("'") and string.endswith("'")):
         return string[1:-1]
     return string
-
-
-def find(name, path):
-    for root, dirs, files in os.walk(path):
-        dirs[:] = [d for d in dirs if d not in exclude]
-        dirs[:] = [d for d in dirs if d[0] != '.']
-        dirs[:] = [d for d in dirs if os.path.isfile(
-            os.path.join(root, d, '__init__.py'))]
-        if name in files:
-            return os.path.join(root, name)
 
 
 def find_env_vars(path='.'):
@@ -121,7 +111,7 @@ def get_env_val_from_user(var, default=''):
     ques = [
         {
             'type': 'input',
-            'message': f' \n Enter a value or leave empty to ignore this variable \n \n {var} = ',
+            'message': f'Enter a value or leave empty to ignore this variable {var} = ',
             'default': default,
             'name': var,
         }
