@@ -10,8 +10,7 @@ ENV_DEFAULTS = {
     'DEBUG': 'False',
     'DEVMODE': 'False',
     'CACHE_URL': 'redis://127.0.0.1:6379/1',
-    'DATABASE_URL': 'postgres://dbuser:dbpasswd@localhost/db',
-    'ALLOWED_HOSTS': '${DOMAIN_NAME},${IPADDR}'
+    'ALLOWED_HOSTS': '{DOMAIN_NAME},{IPADDR}'
 }
 
 

@@ -43,24 +43,6 @@ class CommandTestCase(unittest.TestCase):
         self.assertIn('not found', command1.stderr)
         self.assertTrue(command1.stdout == '')
 
-    def test_command_dependancy(self):
-        cmd1 = Command('sleep 3')
-        cmd2 = Command('echo done', depend=cmd1)
-        cmd3 = Command('lsdfs')
-        cmd4 = Command('ls', depend=cmd3)
-        cmd5 = Command('ls', depend=cmd4)
-        self.assertRaises(CmdException, cmd2.exec, self.ssh)
-        cmd1.exec(self.ssh)
-        cmd3.exec(self.ssh)
-        cmd4.exec(self.ssh)
-        cmd2.exec(self.ssh)
-        cmd5.exec(self.ssh)
-        self.assertTrue(cmd1.is_done)
-        self.assertTrue(cmd2.is_done)
-        self.assertTrue(cmd3.is_failed)
-        self.assertTrue(cmd4.is_canceled)
-        self.assertTrue(cmd5.is_canceled)
-
 
 if __name__ == '__main__':
     unittest.main()

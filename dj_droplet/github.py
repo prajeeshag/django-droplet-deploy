@@ -11,8 +11,6 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-TEMP_DIR = tempfile.TemporaryDirectory().name
-
 
 class ReposNotFound(Exception):
     pass
@@ -22,7 +20,7 @@ class GitError(Exception):
     pass
 
 
-def is_pwd_project_dir():
+def _is_pwd_project_dir():
     ques = [
         {
             'type': 'confirm',
@@ -36,9 +34,9 @@ def is_pwd_project_dir():
     return ans('is_pwd_project_dir')
 
 
-def choose_github_repo(repos):
+def _choose_github_repo(repos):
     if len(repos) < 1:
-        return get_github_repo_from_user()
+        return _get_github_repo_from_user()
     enter_manually = 'Enter GitHub repo manually'
     choices = [enter_manually, ] + repos
     ques = [
@@ -52,33 +50,24 @@ def choose_github_repo(repos):
     ans = prompt(ques, style=custom_style_1)
 
     if ans['github_repo'] == enter_manually:
-        return get_github_repo_from_user()
+        return _get_github_repo_from_user()
     return ans['github_repo']
 
 
-def get_branches(repo, token=None):
-    res = get_branches_resp(repo, token=token)
-    if res.status_code != 200:
-        logger.info(f'{repo} not accesible')
-        return []
-    branches = [item['name'] for item in res.json()]
-    return branches
-
-
-def is_repo_public(repo):
-    res = requests.get(make_github_url(repo))
+def _is_repo_public(repo):
+    res = requests.get(_make_github_url(repo))
     return res.status_code == 200
 
 
-def clone_from(repo, token=None):
-    url = make_github_url(repo, token)
+def _clone_from(repo, working_dir, token=None):
+    url = _make_github_url(repo, token)
     try:
-        return git.Repo.clone_from(url, TEMP_DIR)
+        return git.Repo.clone_from(url, working_dir)
     except GitCommandError:
         return None
 
 
-def make_github_url(repo, token=None):
+def _make_github_url(repo, token=None, *args, **kwargs):
     if token:
         url = f'https://username:{token}@github.com/{repo}.git'
     else:
@@ -86,16 +75,7 @@ def make_github_url(repo, token=None):
     return url
 
 
-def get_branches_resp(repo, token=None):
-    headers = {"Accept": "application/vnd.github.v3+json", }
-    if token:
-        headers["Authorization"] = f"token {token}"
-    res = requests.get(
-        f'https://api.github.com/repos/{repo}/branches', headers=headers)
-    return res
-
-
-def get_github_repo_from_pwd():
+def _get_github_repo_from_pwd():
     """ Get the GitHub remote repos from pwd """
     repos = []
     try:
@@ -103,13 +83,13 @@ def get_github_repo_from_pwd():
     except InvalidGitRepositoryError:
         return repos
     for remote in repo.remotes:
-        repo = repo_from_github_url(remote.url)
+        repo = _repo_from_github_url(remote.url)
         if repo:
             repos.append(repo)
     return repos
 
 
-def get_github_repo_from_user():
+def _get_github_repo_from_user():
     """Get the GitHub repository path from user input"""
     ques = [{
         'type': 'input',
@@ -118,13 +98,13 @@ def get_github_repo_from_user():
     }]
     ans = prompt(ques, style=custom_style_1)
 
-    repo = repo_from_github_url(ans['repo'])
+    repo = _repo_from_github_url(ans['repo'])
     if repo:
         return repo
     return ans['repo']
 
 
-def repo_from_github_url(url):
+def _repo_from_github_url(url):
     githuburl = 'github.com'
     dotgit = '.git'
     strt = url.find(githuburl)
@@ -138,7 +118,7 @@ def repo_from_github_url(url):
     return url[strt:end]
 
 
-def get_github_token_from_user():
+def _get_github_token_from_user():
     ques = [
         {
             'type': 'input',
@@ -151,8 +131,8 @@ def get_github_token_from_user():
     return ans['token']
 
 
-def select_branch(repo):
-    choices = get_branches(repo)
+def _select_branch(repo):
+    choices = _get_branches(repo)
     ques = [{
         'type': 'list',
         'message': 'Select a branch',
@@ -163,53 +143,59 @@ def select_branch(repo):
     return ans['branch']
 
 
-def get_branches(repo):
+def _get_branches(repo):
     branches = []
     for ref in repo.remote().refs:
         strt = ref.name.find('/')
         if strt < 0:
             continue
+        if 'HEAD' in ref.name:
+            continue
         branches.append(ref.name[strt+1:])
     return branches
 
 
-def get_github_config():
-    CONFIG = {}
-    repo_paths = get_github_repo_from_pwd()
-    repo_path = choose_github_repo(repo_paths)
-    CONFIG['repo'] = repo_path
-    repo = None
-    token = None
-    if not is_repo_public(repo_path):
-        while not repo:
-            print((
-                f'\n GitHub repo {repo_path} is not accessible!!'
-                '\n if it is private repo enter your github token'
-                '\n enter "q" to quit'))
-            token = get_github_token_from_user()
-            if token == 'q':
-                break
-            repo = clone_from(repo_path, token)
-    else:
-        repo = clone_from(repo_path)
+class GitHub():
+    def __init__(self, repo=None, token=None, branch=None) -> None:
+        self.repo, self.token, self.branch = repo, token, branch
+        self.working_dir = tempfile.TemporaryDirectory().name
 
-    CONFIG['token'] = token
+        if not self.repo:
+            repo_paths = _get_github_repo_from_pwd()
+            self.repo = _choose_github_repo(repo_paths)
 
-    if not repo:
-        raise GitError(
-            f'GitHub repo {repo_path} is not accessible!!'
-        )
-    branch = select_branch(repo)
-    if not branch:
-        raise GitError(
-            f'GitHub repo {repo_path} not branch found!!'
-        )
-    CONFIG['branch'] = branch
-    CONFIG['repoObj'] = repo
-    return CONFIG
+        git_repo = None
+        if not _is_repo_public(self.repo):
+            if self.token is not None:
+                git_repo = _clone_from(self.repo, self.working_dir, self.token)
+            while not git_repo:
+                print((
+                    f'\n GitHub repo {self.repo} is not accessible!!'
+                    '\n if it is private repo enter your github token'
+                    '\n enter "q" to quit'))
+                self.token = _get_github_token_from_user()
+                if self.token == 'q':
+                    self.token = None
+                    break
+                git_repo = _clone_from(self.repo, self.working_dir, self.token)
+        else:
+            git_repo = _clone_from(self.repo, self.working_dir)
+            self.token = None
+
+        if not git_repo:
+            raise GitError(
+                f'GitHub repo {self.repo} is not accessible!!'
+            )
+        self.branch = _select_branch(git_repo)
+        if not self.branch:
+            raise GitError(
+                f'GitHub repo {self.repo} no branch found!!'
+            )
+
+    @property
+    def url(self):
+        return _make_github_url(self.repo, token=self.token)
 
 
-# if __name__ == '__main__':
-    # create_github_config()
-    # create_github_config()
-    # print(get_github_config())
+if __name__ == '__main__':
+    github = GitHub()

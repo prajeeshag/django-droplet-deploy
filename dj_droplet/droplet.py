@@ -230,6 +230,10 @@ def droplet_exists(name):
 
 
 def choose_droplet():
+    """
+    Returns:
+        (Droplet: droplet, Bool: created)
+    """
     def choices(ans):
         return [
             Separator(),
@@ -247,8 +251,8 @@ def choose_droplet():
     answers = prompt(ques, style=custom_style_1)
     droplet = answers.get('droplet')
     if droplet.get('create', False):
-        return create_droplet()
-    return droplet
+        return (create_droplet(), True)
+    return (droplet, False)
 
 
 # TODO: delete_droplet list_droplet show_droplet_details
@@ -329,12 +333,23 @@ def import_ssh_key():
 
 
 def select_ssh_keys(sshkeys, selectedKeys=[]):
-    choices = [{'name': item['name'], 'value':item,
-                'checked': item in selectedKeys} for item in sshkeys]
+    choices = [{'name': item['name'], 'value':item}
+               for item in sshkeys if item not in selectedKeys]
+    choices += [Separator()]
+    choices += [{'name': 'Import a new ssh key to you DO account',
+                 'value': 'import'}, ]
+    message1 = ''
+    if len(selectedKeys) > 0:
+        choices += [Separator()]
+        choices += [{'name': 'Continue...',
+                     'value': 'continue'}, ]
+        choices += [{'name': 'Reset Selections',
+                     'value': 'reset'}, ]
+        message1 = f'Selected keys: {", ".join([item["name"] for item in selectedKeys])}'
     ques = [
         {
-            'type': 'checkbox',
-            'message': 'Select the SSH keys to be added to your droplet',
+            'type': 'list',
+            'message': 'Select the SSH keys to be added to your droplet. ' + message1,
             'name': 'keys',
             'choices': choices,
         }
@@ -344,43 +359,19 @@ def select_ssh_keys(sshkeys, selectedKeys=[]):
 
 
 def get_ssh_keys():
-    message1 = '--- Choose SSH keys ---'
-    message2 = ''
-    message3 = ''
     sshkeyselected = []
-    choices = [
-        {'name': 'Continue', 'value': 'continue'},
-        {'name': 'Import a new ssh key to you DO account', 'value': 'import'},
-        {'name': 'Select from already existing ssh keys', 'value': 'select'},
-    ]
 
     while True:
         sshkeysall = doctl.compute.ssh_key.list()
-        if sshkeyselected:
-            message2 = ' (Selected: ' + \
-                ', '.join(
-                    [f"{item['name']}" for item in sshkeyselected]) + ')'
-            message3 = ''
-
-        ques = [
-            {
-                'type': 'list',
-                'name': 'choice',
-                'message': message1+message2+message3,
-                'choices': choices
-            }
-        ]
-        ans = prompt(ques, answers={'keys': sshkeyselected})
-        if ans['choice'] == 'import':
+        ans = select_ssh_keys(sshkeysall, sshkeyselected)
+        if ans == 'import':
             sshkeyselected += [import_ssh_key()]
-        if ans['choice'] == 'select':
-            sshkeyselected += select_ssh_keys(sshkeysall,
-                                              selectedKeys=sshkeyselected)
-        if ans['choice'] == 'continue':
-            if sshkeyselected:
-                return sshkeyselected
-            else:
-                message3 = ' You need to choose atleast one ssh keys to continue !!!'
+        elif ans == 'reset':
+            sshkeyselected = []
+        elif ans == 'continue':
+            return sshkeyselected
+        else:
+            sshkeyselected += [ans]
 
 
 if __name__ == "__main__":
