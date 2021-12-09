@@ -122,7 +122,7 @@ class Component:
         Command(cmd).exec(self._ssh)
 
     def _setup(self, **kwargs):
-        self._create_config_dir(self._ssh)
+        self._install_packages()
         for cmd in self.SETUP_COMMANDS:
             Command(cmd).exec(self._ssh, obj=self, **kwargs)
 
@@ -155,6 +155,7 @@ class Component:
         if not droplet_created and not self._config_dir_exist(self._ssh):
             if not self._confirm_proceed_existing_droplet():
                 raise UnAuthorizedDroplet()
+        self._create_config_dir(self._ssh)
         self._setup_component()
 
     def _setup_component(self):
@@ -184,7 +185,7 @@ class Component:
             return
         self.name = ans
         self._load_self(self._ssh)
-        if not self.initialized:
+        if not getattr(self, 'initialized', False):
             self._setup()
             self.initialized = True
             self._dump_self(self._ssh)
@@ -373,11 +374,11 @@ class DjangoApp(Component):
 
 
 class DataBaseUser(Component):
+    VERBOSE_NAME = 'database user'
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
-    dbc_cmd_prefix = 'cd /tmp && sudo -u postgres psql -c'
-    SETUP_COMMANDS = (dbc_cmd_prefix+f' {item}' for item in (
+    SETUP_COMMANDS = ('cd /tmp && sudo -u postgres psql -c' + f' "{item}"' for item in (
         "CREATE USER {obj.name} WITH PASSWORD \'{obj.passwd}\';",
         "ALTER ROLE {obj.name} SET client_encoding TO \'utf8\';",
         "ALTER ROLE {obj.name} SET default_transaction_isolation TO \'read committed\';",
@@ -386,41 +387,45 @@ class DataBaseUser(Component):
 
     def __init__(self, ssh) -> None:
         self._ssh = ssh
-        dumps = self._list_dumps(self._ssh)
-        if len(dumps) < 1:
-            self._init_component()
-        else:
-            self._select_or_init_component(dumps, 'database user')
+        self._setup_component()
 
-    def _init_component(self):
+    def _init_fields(self):
         def validate(x):
             if x.isalpha() and x.islower() and len(x) >= 3:
                 return True
-            return 'Database username should lowercase alphabets of atleast 3 characters'
+            return 'Database username should be lowercase alphabets of atleast 3 characters'
 
         self.name = self._get_input_from_user(
-            msg='Enter a name for the database user',
+            msg='Enter a username for the database user',
             validate=validate)
+
         self.passwd = get_random_string(14)
-        self._setup()
-        self._dump_self(self._ssh)
 
 
 class DataBase(Component):
+    VERBOSE_NAME = 'database'
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
-    DATABASE_URL = 'postgres://{obj.dbuser}:{obj.passwd}@localhost/{obj.db}',
-    dbc_cmd_prefix = 'cd /tmp && sudo -u postgres psql -c'
-    SETUP_COMMANDS = (dbc_cmd_prefix+f' {item}' for item in (
-        "CREATE DATABASE {obj.db};",
-        "GRANT ALL PRIVILEGES ON DATABASE {obj.db} TO {obj.dbuser.name};",
+    DATABASE_URL = 'postgres://{obj.dbuser.name}:{obj.dbuser.passwd}@localhost/{obj.db}',
+    SETUP_COMMANDS = ('cd /tmp && sudo -u postgres psql -c' + f' "{item}"' for item in (
+        "CREATE DATABASE {obj.name};",
+        "GRANT ALL PRIVILEGES ON DATABASE {obj.name} TO {obj.dbuser.name};",
     ))
 
-    def __init__(self, ipaddr, backup=True) -> None:
-        self.backup = backup
+    def __init__(self) -> None:
         self._setup_droplet()
-        self._setup()
+
+    def _init_fields(self):
+        def validate(x):
+            if x.isalpha() and x.islower() and len(x) >= 3:
+                return True
+            return 'Database name should be lowercase alphabets (atleast 3 characters)'
+
+        self.name = self._get_input_from_user(
+            msg=f'Enter a name for the {self.VERBOSE_NAME}',
+            validate=validate)
+        self.dbuser = DataBaseUser(self._ssh)
 
     @ property
     def url(self):
@@ -466,4 +471,4 @@ class RedisCache:
 
 
 if __name__ == '__main__':
-    app = DjangoApp()
+    app = DataBase()
