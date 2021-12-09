@@ -3,6 +3,7 @@ import os
 import pickle
 from abc import ABC, abstractclassmethod
 from enum import Enum
+from re import VERBOSE
 from typing import List
 
 import paramiko
@@ -25,6 +26,14 @@ class CmdException(Exception):
     pass
 
 
+class UnAuthorizedDroplet(Exception):
+    pass
+
+
+class MultipleAppsException(Exception):
+    pass
+
+
 class Status(Enum):
     NOT_EXEC = 'not_exec'
     EXECUTING = 'executing'
@@ -37,6 +46,7 @@ class Component:
     CONFIG_DIR = '.django_applet'
     DEFAULT_APT_PACKAGES = []
     SETUP_COMMANDS = []
+    VERBOSE_NAME = 'Component'
 
     def _dump_self(self, client):
         fname = self._get_dump_file_name()
@@ -73,12 +83,13 @@ class Component:
         return f'{self.CONFIG_DIR}/{name}.{self.__class__.__name__}'
 
     def _list_dumps(self, client):
-        cmd = f'cd {self.CONFIG_DIR} && ls *.{self.__class__.__name__}'
+        class_name = self.__class__.__name__
+        cmd = f'cd {self.CONFIG_DIR} && ls *.{class_name}'
         _, stdout, stderr = client.exec_command(cmd)
         exit_status = stdout.channel.recv_exit_status()
         if exit_status == 0:
-            return stdout.read().decode('utf-8')
-        return ''
+            return stdout.read().decode('utf-8').replace(f'.{class_name}', '').split()
+        return []
 
     def _get_file_name(self):
         return self.name
@@ -111,6 +122,7 @@ class Component:
         Command(cmd).exec(self._ssh)
 
     def _setup(self, **kwargs):
+        self._create_config_dir(self._ssh)
         for cmd in self.SETUP_COMMANDS:
             Command(cmd).exec(self._ssh, obj=self, **kwargs)
 
@@ -123,6 +135,67 @@ class Component:
             'name': 'name',
             'validate': validate,
             'default': default,
+        }]
+        ans = prompt(ques)
+        return ans['name']
+
+    def _select_from_list_input(self, msg, choices):
+        ques = [{
+            'type': 'list',
+            'message': msg,
+            'choices': choices,
+            'name': 'name',
+        }]
+        ans = prompt(ques)
+        return ans['name']
+
+    def _setup_droplet(self):
+        (self.droplet, droplet_created) = choose_droplet()
+        self._setup_ssh(self.droplet.publicIp4)
+        if not droplet_created and not self._config_dir_exist(self._ssh):
+            if not self._confirm_proceed_existing_droplet():
+                raise UnAuthorizedDroplet()
+        self._setup_component()
+
+    def _setup_component(self):
+        dumps = self._list_dumps(self._ssh)
+        if len(dumps) < 0:
+            self._init_component()
+        else:
+            self._select_or_init_component(dumps)
+
+    def _init_component(self):
+        self._init_fields()
+        self._dump_self(self._ssh)
+        self._setup()
+        self.initialized = True
+        self._dump_self(self._ssh)
+
+    def _init_fields(self):
+        raise NotImplementedError()
+
+    def _select_or_init_component(self, dumps):
+        choices = dumps + \
+            [{'name': f'Create a new {self.VERBOSE_NAME}', 'value': '_create'}]
+        ans = self._select_from_list_input(
+            msg=f'Select a {self.VERBOSE_NAME}', choices=choices)
+        if ans == '_create':
+            self._init_component()
+            return
+        self.name = ans
+        self._load_self(self._ssh)
+        if not self.initialized:
+            self._setup()
+            self.initialized = True
+            self._dump_self(self._ssh)
+
+    def _confirm_proceed_existing_droplet(self):
+        ques = [{
+            'type': 'confirm',
+            'message': ('This droplet is not created by Django Applet, '
+                        'Do you want to proceed ? (Warning: Not recommended) '),
+            'name': 'name',
+            'default': False,
         }]
         ans = prompt(ques)
         return ans['name']
@@ -201,15 +274,8 @@ for name in ('stdout', 'stderr'):
     assign_status_attr(name, Command, fn='fn1')
 
 
-class UnAuthorizedDroplet(Exception):
-    pass
-
-
-class MultipleAppsException(Exception):
-    pass
-
-
 class DjangoApp(Component):
+    VERBOSE_NAME = 'django app'
     DEFAULT_APT_PACKAGES = [
         'python3-pip', 'python3-dev', 'nginx', 'curl', 'certbot',
         'python3-certbot-nginx', 'git', 'libpq-dev', 'python3-venv',
@@ -268,60 +334,11 @@ class DjangoApp(Component):
         self.gunicorn_workers = 3
         self._setup_droplet()
 
-    def _setup_droplet(self):
-        (self.droplet, droplet_created) = choose_droplet()
-        self._setup_ssh(self.droplet.publicIp4)
-        if droplet_created:
-            self._init_droplet()
-        else:
-            self._init_existing_droplet()
-
-    def _init_droplet(self):
-        if not getattr(self, 'initialized', False):
-            self._create_config_dir(self._ssh)
-            if not getattr(self, 'name', None):
-                self.name = self._get_app_name_from_user()
-            if not getattr(self, 'domain_name', None):
-                self.domain_name = self._get_domain_name_from_user()
-            if not getattr(self, 'github', None):
-                self.github = GitHub()
-            if not getattr(self, 'wsgi_module', None):
-                self.wsgi_application = self._get_wsgi_application()
-
-            self._dump_self(self._ssh)
-            self._install_packages()
-            self._setup()
-            self.initialized = True
-            self._dump_self(self._ssh)
-
-    def _init_existing_droplet(self):
-        # TODO: load app configuration if existing
-        if not self._config_dir_exist(self._ssh):
-            if (self._confirm_proceed_existing_droplet()):
-                self._init_droplet()
-                return
-            else:
-                raise UnAuthorizedDroplet()
-        dumps = self._list_dumps(self._ssh).split()
-        if len(dumps) > 1:
-            raise MultipleAppsException()
-        if len(dumps) < 1:
-            return self._init_droplet()
-        dumps = dumps[0]
-        self.name = dumps[:dumps.index('.')]
-        self._load_self(self._ssh)
-        self._init_droplet()
-
-    def _confirm_proceed_existing_droplet(self):
-        ques = [{
-            'type': 'confirm',
-            'message': ('This droplet is not created or maintained by Django Applet, '
-                        'Do you want to proceed with this droplet? (Warning: Not recommended) '),
-            'name': 'name',
-            'default': False,
-        }]
-        ans = prompt(ques)
-        return ans['name']
+    def _init_fields(self):
+        self.name = self._get_app_name_from_user()
+        self.domain_name = self._get_domain_name_from_user()
+        self.github = GitHub()
+        self.wsgi_application = self._get_wsgi_application()
 
     def _get_wsgi_application(self):
         wsgiapp = get_wsgi_app(self.github.working_dir)
@@ -355,29 +372,70 @@ class DjangoApp(Component):
         return self._get_input_from_user(msg, validate)
 
 
+class DataBaseUser(Component):
+    DEFAULT_APT_PACKAGES = [
+        'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
+    ]
+    dbc_cmd_prefix = 'cd /tmp && sudo -u postgres psql -c'
+    SETUP_COMMANDS = (dbc_cmd_prefix+f' {item}' for item in (
+        "CREATE USER {obj.name} WITH PASSWORD \'{obj.passwd}\';",
+        "ALTER ROLE {obj.name} SET client_encoding TO \'utf8\';",
+        "ALTER ROLE {obj.name} SET default_transaction_isolation TO \'read committed\';",
+        "ALTER ROLE {obj.name} SET timezone TO \'UTC\';",
+    ))
+
+    def __init__(self, ssh) -> None:
+        self._ssh = ssh
+        dumps = self._list_dumps(self._ssh)
+        if len(dumps) < 1:
+            self._init_component()
+        else:
+            self._select_or_init_component(dumps, 'database user')
+
+    def _init_component(self):
+        def validate(x):
+            if x.isalpha() and x.islower() and len(x) >= 3:
+                return True
+            return 'Database username should lowercase alphabets of atleast 3 characters'
+
+        self.name = self._get_input_from_user(
+            msg='Enter a name for the database user',
+            validate=validate)
+        self.passwd = get_random_string(14)
+        self._setup()
+        self._dump_self(self._ssh)
+
+
 class DataBase(Component):
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
-    DATABASE_URL = 'postgres://{self.dbuser}:{self.passwd}@{hostname}/{self.db}',
+    DATABASE_URL = 'postgres://{obj.dbuser}:{obj.passwd}@localhost/{obj.db}',
     dbc_cmd_prefix = 'cd /tmp && sudo -u postgres psql -c'
-    DB_CREATE_COMMANDS = (
-        dbc_cmd_prefix + ' "CREATE DATABASE {self.db};"',
-        dbc_cmd_prefix +
-        ' "CREATE USER {self.dbuser} WITH PASSWORD \'{self.passwd}\';"',
-        dbc_cmd_prefix +
-        ' "ALTER ROLE {self.dbuser} SET client_encoding TO \'utf8\';"',
-        dbc_cmd_prefix +
-        ' "ALTER ROLE {self.dbuser} SET default_transaction_isolation TO \'read committed\';"',
-        dbc_cmd_prefix +
-        ' "ALTER ROLE {self.dbuser} SET timezone TO \'UTC\';"',
-    )
+    SETUP_COMMANDS = (dbc_cmd_prefix+f' {item}' for item in (
+        "CREATE DATABASE {obj.db};",
+        "GRANT ALL PRIVILEGES ON DATABASE {obj.db} TO {obj.dbuser.name};",
+    ))
 
+    def __init__(self, ipaddr, backup=True) -> None:
+        self.backup = backup
+        self._setup_droplet()
+        self._setup()
+
+    @ property
+    def url(self):
+        return self.DATABASE_URL.format(obj=self)
+
+
+class DataBaseBackup(Component):
+    DEFAULT_APT_PACKAGES = [
+        'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
+    ]
     DB_ROOT_DIR = '/database/backup'
     DB_ARCHIVE_DIR = f'{DB_ROOT_DIR}/archive'
     DB_BACKUP_DIR = f'{DB_ROOT_DIR}/backup'
     DB_BACKUP_COMMAND = f'cd /tmp && sudo -u postgres pg_basebackup -D {DB_BACKUP_DIR}'
-    DB_ARCHIVE_SETUP_COMMANDS = (
+    SETUP_COMMANDS = (
         ('mkdir -p ' + DB_ARCHIVE_DIR, False),
         ('mkdir -p ' + DB_BACKUP_DIR, False),
         ('chown -R postgres:postgres ' + DB_ROOT_DIR, False),
@@ -388,40 +446,18 @@ class DataBase(Component):
         (DB_BACKUP_COMMAND, False),
     )
 
-    def __init__(self, ipaddr, db='db', backup=True) -> None:
-        self.db = db
-        self.dbuser = f'{db}user'
-        self.passwd = f'{db}passwd'
-        self.backup = backup
-        self._setup_ssh(ipaddr)
-        self._install_packages()
+    def __init__(self) -> None:
+        super().__init__()
         cmd = Command('pg_lsclusters --json')
         cmd.exec(self._ssh)
         data = json.loads(cmd.stdout)[0]
         self.pgdata = data['pgdata']
         self.pgconfigdir = data['configdir']
-        self._create_db()
-        if self.backup:
-            self._setup_backup()
-
-    def _create_db(self):
-        for cmd in self.DB_CREATE_COMMANDS:
-            Command(cmd).exec(self._ssh, db=self.db,
-                              dbuser=self.dbuser,
-                              passwd=self.passwd)
 
     def _setup_backup(self):
         for cmd in self.DB_ARCHIVE_SETUP_COMMANDS:
             Command(cmd[0]).exec(self._ssh, force=cmd[1], config=os.path.join(
                 self.pgconfigdir, 'postgresql.conf'))
-
-    @ property
-    def url(self):
-        return self.DATABASE_URL.format(
-            dbuser=self.dbuser,
-            passwd=self.passwd,
-            hostname='localhost',
-            db=self.db)
 
 
 class RedisCache:
