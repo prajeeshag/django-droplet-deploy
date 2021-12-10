@@ -11,9 +11,8 @@ from paramiko import sftp
 from PyInquirer import prompt
 
 from droplet import choose_droplet
-from github import GitHub
-from util import hash_string, get_wsgi_app
-from util import get_random_string
+from util import hash_string, get_wsgi_app, get_random_string
+from util import GitHub, Env
 import validators
 
 # CommandBlocks are the basic components, Each CommandBlocks can have dependencies
@@ -30,7 +29,7 @@ class UnAuthorizedDroplet(Exception):
     pass
 
 
-class MultipleAppsException(Exception):
+class MultipleComponentsFound(Exception):
     pass
 
 
@@ -47,6 +46,7 @@ class Component:
     DEFAULT_APT_PACKAGES = []
     SETUP_COMMANDS = []
     VERBOSE_NAME = 'Component'
+    ONE_PER_DROPLET = False
 
     def _dump_self(self, client):
         fname = self._get_dump_file_name()
@@ -160,7 +160,7 @@ class Component:
 
     def _setup_component(self):
         dumps = self._list_dumps(self._ssh)
-        if len(dumps) < 0:
+        if len(dumps) < 1:
             self._init_component()
         else:
             self._select_or_init_component(dumps)
@@ -176,14 +176,19 @@ class Component:
         raise NotImplementedError()
 
     def _select_or_init_component(self, dumps):
-        choices = dumps + \
-            [{'name': f'Create a new {self.VERBOSE_NAME}', 'value': '_create'}]
-        ans = self._select_from_list_input(
-            msg=f'Select a {self.VERBOSE_NAME}', choices=choices)
-        if ans == '_create':
-            self._init_component()
-            return
-        self.name = ans
+        if self.ONE_PER_DROPLET:
+            if len(dumps) > 1:
+                raise MultipleComponentsFound()
+            self.name = dumps[0]
+        else:
+            choices = dumps + \
+                [{'name': f'Create a new {self.VERBOSE_NAME}', 'value': '_create'}]
+            ans = self._select_from_list_input(
+                msg=f'Select a {self.VERBOSE_NAME}', choices=choices)
+            if ans == '_create':
+                self._init_component()
+                return
+            self.name = ans
         self._load_self(self._ssh)
         if not getattr(self, 'initialized', False):
             self._setup()
@@ -340,6 +345,9 @@ class DjangoApp(Component):
         self.domain_name = self._get_domain_name_from_user()
         self.github = GitHub()
         self.wsgi_application = self._get_wsgi_application()
+        self.env = Env(working_dir=self.github.working_dir)
+        self.db = DataBase()
+        self.redis = RedisCache()
 
     def _get_wsgi_application(self):
         wsgiapp = get_wsgi_app(self.github.working_dir)
@@ -407,7 +415,7 @@ class DataBase(Component):
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
-    DATABASE_URL = 'postgres://{obj.dbuser.name}:{obj.dbuser.passwd}@localhost/{obj.db}',
+    URL_TEMPLATE = 'postgres://{obj.dbuser.name}:{obj.dbuser.passwd}@localhost/{obj.db}',
     SETUP_COMMANDS = ('cd /tmp && sudo -u postgres psql -c' + f' "{item}"' for item in (
         "CREATE DATABASE {obj.name};",
         "GRANT ALL PRIVILEGES ON DATABASE {obj.name} TO {obj.dbuser.name};",
@@ -429,10 +437,12 @@ class DataBase(Component):
 
     @property
     def url(self):
-        return self.DATABASE_URL.format(obj=self)
+        return self.URL_TEMPLATE.format(obj=self)
 
 
 class DataBaseBackup(Component):
+    VERBOSE_NAME = 'database backup'
+    ONE_PER_DROPLET = True
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
@@ -452,7 +462,7 @@ class DataBaseBackup(Component):
     )
 
     def __init__(self) -> None:
-        self.name = '_database_backup'
+        self.name = 'database_backup'
         self._setup_droplet()
 
     def _init_fields(self):
@@ -462,9 +472,19 @@ class DataBaseBackup(Component):
         self.config = data['configdir'] + '/postgresql.conf'
 
 
-class RedisCache:
+class RedisCache(Component):
+    VERBOSE_NAME = 'redis server'
+    ONE_PER_DROPLET = True
+    DEFAULT_APT_PACKAGES = ['redis-server', ]
+    URL_TEMPLATE = "redis://127.0.0.1:6379/1"
+
     def __init__(self) -> None:
-        pass
+        self.name = 'redis_server'
+        self._setup_droplet()
+
+    @property
+    def url(self):
+        return self.URL_TEMPLATE.format(obj=self)
 
 
 if __name__ == '__main__':
