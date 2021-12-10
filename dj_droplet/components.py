@@ -427,7 +427,7 @@ class DataBase(Component):
             validate=validate)
         self.dbuser = DataBaseUser(self._ssh)
 
-    @ property
+    @property
     def url(self):
         return self.DATABASE_URL.format(obj=self)
 
@@ -441,28 +441,25 @@ class DataBaseBackup(Component):
     DB_BACKUP_DIR = f'{DB_ROOT_DIR}/backup'
     DB_BACKUP_COMMAND = f'cd /tmp && sudo -u postgres pg_basebackup -D {DB_BACKUP_DIR}'
     SETUP_COMMANDS = (
-        ('mkdir -p ' + DB_ARCHIVE_DIR, False),
-        ('mkdir -p ' + DB_BACKUP_DIR, False),
-        ('chown -R postgres:postgres ' + DB_ROOT_DIR, False),
-        ('echo "archive_mode = on" >>  {config}', False),
-        (f'echo "archive_command = \'test ! -f {DB_ARCHIVE_DIR}/%f && cp %p {DB_ARCHIVE_DIR}/%f\'"' + ' >> {config}', False),
-        ('echo "wal_level = replica" >> {config}', False),
-        ('systemctl restart postgresql', False),
-        (DB_BACKUP_COMMAND, False),
+        'mkdir -p ' + DB_ARCHIVE_DIR,
+        'mkdir -p ' + DB_BACKUP_DIR,
+        'chown -R postgres:postgres ' + DB_ROOT_DIR,
+        'echo "archive_mode = on" >>  {obj.config}',
+        f'echo "archive_command = \'test ! -f {DB_ARCHIVE_DIR}/%f && cp %p {DB_ARCHIVE_DIR}/%f\'"' + ' >> {obj.config}',
+        'echo "wal_level = replica" >> {obj.config}',
+        'systemctl restart postgresql',
+        DB_BACKUP_COMMAND,
     )
 
     def __init__(self) -> None:
-        super().__init__()
+        self.name = '_database_backup'
+        self._setup_droplet()
+
+    def _init_fields(self):
         cmd = Command('pg_lsclusters --json')
         cmd.exec(self._ssh)
         data = json.loads(cmd.stdout)[0]
-        self.pgdata = data['pgdata']
-        self.pgconfigdir = data['configdir']
-
-    def _setup_backup(self):
-        for cmd in self.DB_ARCHIVE_SETUP_COMMANDS:
-            Command(cmd[0]).exec(self._ssh, force=cmd[1], config=os.path.join(
-                self.pgconfigdir, 'postgresql.conf'))
+        self.config = data['configdir'] + '/postgresql.conf'
 
 
 class RedisCache:
@@ -471,4 +468,4 @@ class RedisCache:
 
 
 if __name__ == '__main__':
-    app = DataBase()
+    app = DataBaseBackup()
