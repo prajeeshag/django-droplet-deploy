@@ -191,10 +191,17 @@ class Env:
             envvars.update(_find_env_vars(working_dir))
         envvars.update(_values_from_dotenv())
         self.vars = envvars
-        self.edit()
+        # self.edit()
 
     def edit(self):
         _edit_env_vars(self.vars)
+
+    def write_env(self, fo, **kwargs):
+        for key, value in self.vars.items():
+            print(key, value)
+            line = f'{key} = {value}'
+            fo.write(line)
+            fo.write('\n')
 
 
 class ReposNotFound(Exception):

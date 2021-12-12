@@ -7,7 +7,6 @@ from re import VERBOSE
 from typing import List
 
 import paramiko
-from paramiko import sftp
 from PyInquirer import prompt
 
 from droplet import choose_droplet
@@ -51,7 +50,6 @@ class Component:
     def _dump_self(self, client):
         fname = self._get_dump_file_name()
         sftp = client.open_sftp()
-        data = pickle.dumps(self)
         with sftp.open(fname, 'w') as file:
             pickle.dump(self, file)
         sftp.close()
@@ -121,10 +119,10 @@ class Component:
             ' '.join(self.DEFAULT_APT_PACKAGES)
         Command(cmd).exec(self._ssh)
 
-    def _setup(self, **kwargs):
+    def _setup(self, force=False, **kwargs):
         self._install_packages()
         for cmd in self.SETUP_COMMANDS:
-            Command(cmd).exec(self._ssh, obj=self, **kwargs)
+            Command(cmd).exec(self._ssh, force=force, obj=self, **kwargs)
 
     def _get_input_from_user(self, msg, validate=None, default=''):
         if validate is None:
@@ -134,6 +132,16 @@ class Component:
             'message': msg,
             'name': 'name',
             'validate': validate,
+            'default': default,
+        }]
+        ans = prompt(ques)
+        return ans['name']
+
+    def _get_confirm_from_user(self, msg, default=False):
+        ques = [{
+            'type': 'confirm',
+            'message': msg,
+            'name': 'name',
             'default': default,
         }]
         ans = prompt(ques)
@@ -246,6 +254,7 @@ class Command(Component):
         if self.exit_status == 0:
             self.status = Status.DONE
             self._dump_self(client)
+            return self._stdout
         else:
             self.status = Status.FAILED
             raise CmdException(
@@ -293,6 +302,7 @@ class DjangoApp(Component):
         "[Install]\nWantedBy = sockets.target\n"
     )
 
+    ENV_PATH = '/home/{obj.name}/ROOT/.env'
     # gunicorn.service
     GUNICORN_SERVICE_CONTENT = (
         "[Unit]\nDescription={obj.name} daemon\nRequires={obj.name}.socket\nAfter=network.target\n\n"
@@ -303,9 +313,16 @@ class DjangoApp(Component):
         "--workers {obj.gunicorn_workers} "
         "--bind unix:/run/{obj.name}.sock "
         "{obj.wsgi_application}\n"
-        "EnvironmentFile=/home/{obj.name}/ROOT/.env \n\n"
+        f"EnvironmentFile={ENV_PATH} \n\n"
         "[Install]\nWantedBy=multi-user.target\n"
     )
+
+    GUNICORN_COMMANDS = {
+        'start': 'systemctl daemon-reload && systemctl start {obj.name}',
+        'stop': 'systemctl stop {obj.name}',
+        'is_active': 'systemctl is-active {obj.name}',
+        'restart': 'systemctl daemon-reload && systemctl restart {obj.name}'
+    }
 
     # scp /etc/nginx/sites-available/default
     NGINX_CONTENT = (
@@ -315,6 +332,13 @@ class DjangoApp(Component):
         "\tlocation /media/ {{\n\t\troot /home/{obj.name}/ROOT/; \n\t}}\n"
         "\tlocation / {{\n\t\tinclude proxy_params; proxy_pass http://unix:/run/{obj.name}.sock; \n\t}}\n}}"
     )
+
+    NGINX_COMMANDS = {
+        'start': 'systemctl daemon-reload && systemctl start nginx',
+        'stop': 'systemctl stop nginx',
+        'is_active': 'systemctl is-active nginx',
+        'restart': 'systemctl daemon-reload && systemctl restart nginx'
+    }
 
     SETUP_COMMANDS = [
         'adduser {obj.name} --gecos "First Last,RoomNumber,WorkPhone,HomePhone" --disabled-password',
@@ -332,8 +356,14 @@ class DjangoApp(Component):
         '/etc/systemd/system/{obj.name}.service',
         f'echo -e "{NGINX_CONTENT}" > ' +
         '/etc/nginx/sites-available/{obj.domain_name}',
-        'ln -s /etc/nginx/sites-available/{obj.domain_name} /etc/nginx/sites-enabled/{obj.domain_name}',
+        'ln -sf /etc/nginx/sites-available/{obj.domain_name} /etc/nginx/sites-enabled/{obj.domain_name}',
+        'rm -f /etc/nginx/sites-enabled/default'
     ]
+
+    DEFAULT_POST_DEPLOY_JOBS = (
+        "python manage.py collectstatic --no-input",
+        "python manage.py migrate"
+    )
 
     def __init__(self) -> None:
         self.password = get_random_string(14)
@@ -346,8 +376,48 @@ class DjangoApp(Component):
         self.github = GitHub()
         self.wsgi_application = self._get_wsgi_application()
         self.env = Env(working_dir=self.github.working_dir)
-        self.db = DataBase()
-        self.redis = RedisCache()
+        self.env.vars['ALLOWED_HOSTS'] = f'{self.domain_name},{self.droplet.publicIp4}'
+        if self._get_confirm_from_user('Add a database?', default=True):
+            self.db = DataBase()
+            self.env.vars['DATABASE_URL'] = self.db.url
+        if self._get_confirm_from_user('Add a redis server?', default=False):
+            self.redis = RedisCache()
+            self.env.vars['CACHE_URL'] = self.redis.url
+        self.env.vars['DEBUG'] = 'False'
+        if 'DEVMODE' in self.env.vars:
+            self.env.vars['DEVMODE'] = 'False'
+        # TODO: Set random secret key
+        self.env.edit()
+
+    def _setup(self, **kwargs):
+        super()._setup(**kwargs)
+        self._write_env()
+        self._run_post_deploy_jobs()
+        Command(self.GUNICORN_COMMANDS['restart']).exec(
+            self._ssh, force=True, obj=self)
+        Command(self.NGINX_COMMANDS['restart']).exec(
+            self._ssh, force=True, obj=self)
+
+    def _run_post_deploy_jobs(self):
+        for cmd in self.DEFAULT_POST_DEPLOY_JOBS:
+            command = f'sudo -H -u {self.name} bash -c " cd /home/{self.name}/ROOT/ && ' + \
+                cmd.replace(
+                    'python', f'/home/{self.name}/venv/bin/python', 1) + '"'
+            Command(command).exec(self._ssh, force=True)
+
+    def _write_env(self):
+        sftp = self._ssh.open_sftp()
+        envfile_path = self.ENV_PATH.format(obj=self)
+        with sftp.open(envfile_path, 'w') as fo:
+            self.env.write_env(fo, obj=self)
+        sftp.close()
+
+    def rebuild(self):
+        Command(self.GUNICORN_COMMANDS['stop']).exec(
+            self._ssh, force=True, obj=self)
+        command = Command(f'userdel -r {self.name}')
+        command.exec(self._ssh, force=True)
+        self._setup(force=True)
 
     def _get_wsgi_application(self):
         wsgiapp = get_wsgi_app(self.github.working_dir)
@@ -415,7 +485,7 @@ class DataBase(Component):
     DEFAULT_APT_PACKAGES = [
         'libpq-dev', 'postgresql', 'postgresql-contrib', 'libjson-perl',
     ]
-    URL_TEMPLATE = 'postgres://{obj.dbuser.name}:{obj.dbuser.passwd}@localhost/{obj.db}',
+    URL_TEMPLATE = 'postgres://{obj.dbuser.name}:{obj.dbuser.passwd}@localhost/{obj.name}'
     SETUP_COMMANDS = ('cd /tmp && sudo -u postgres psql -c' + f' "{item}"' for item in (
         "CREATE DATABASE {obj.name};",
         "GRANT ALL PRIVILEGES ON DATABASE {obj.name} TO {obj.dbuser.name};",
@@ -434,6 +504,8 @@ class DataBase(Component):
             msg=f'Enter a name for the {self.VERBOSE_NAME}',
             validate=validate)
         self.dbuser = DataBaseUser(self._ssh)
+        if self._get_confirm_from_user('Enable database backup?', default=True):
+            self.backup = DataBaseBackup(self._ssh)
 
     @property
     def url(self):
@@ -461,9 +533,10 @@ class DataBaseBackup(Component):
         DB_BACKUP_COMMAND,
     )
 
-    def __init__(self) -> None:
+    def __init__(self, ssh) -> None:
         self.name = 'database_backup'
-        self._setup_droplet()
+        self._ssh = ssh
+        self._setup_component()
 
     def _init_fields(self):
         cmd = Command('pg_lsclusters --json')
@@ -482,10 +555,14 @@ class RedisCache(Component):
         self.name = 'redis_server'
         self._setup_droplet()
 
+    def _init_fields(self):
+        pass
+
     @property
     def url(self):
         return self.URL_TEMPLATE.format(obj=self)
 
 
 if __name__ == '__main__':
-    app = DataBaseBackup()
+    app = DjangoApp()
+    app.rebuild()
