@@ -1,18 +1,18 @@
 import json
 import os
 import pickle
+import secrets
 from abc import ABC, abstractclassmethod
 from enum import Enum
 from re import VERBOSE
 from typing import List
 
 import paramiko
+import validators
 from PyInquirer import prompt
 
 from droplet import choose_droplet
-from util import hash_string, get_wsgi_app, get_random_string
-from util import GitHub, Env
-import validators
+from util import Env, GitHub, get_random_string, get_wsgi_app, hash_string
 
 # CommandBlocks are the basic components, Each CommandBlocks can have dependencies
 # Each command in a command block will have a status property
@@ -290,10 +290,10 @@ for name in ('stdout', 'stderr'):
 
 
 class DjangoApp(Component):
+    # TODO: setup certbot and cronjobs
     VERBOSE_NAME = 'django app'
     DEFAULT_APT_PACKAGES = [
-        'python3-pip', 'python3-dev', 'nginx', 'curl', 'certbot',
-        'python3-certbot-nginx', 'git', 'libpq-dev', 'python3-venv',
+        'python3-pip', 'python3-dev', 'nginx', 'curl', 'git', 'libpq-dev', 'python3-venv',
     ]
     # gunicorn.socket
     GUNICORN_SOCKET_CONTENT = (
@@ -354,6 +354,9 @@ class DjangoApp(Component):
         '/etc/systemd/system/{obj.name}.socket',
         f'echo -e "{GUNICORN_SERVICE_CONTENT}" > ' +
         '/etc/systemd/system/{obj.name}.service',
+    ]
+
+    NGINX_SETUP_COMMANDS = [
         f'echo -e "{NGINX_CONTENT}" > ' +
         '/etc/nginx/sites-available/{obj.domain_name}',
         'ln -sf /etc/nginx/sites-available/{obj.domain_name} /etc/nginx/sites-enabled/{obj.domain_name}',
@@ -383,14 +386,17 @@ class DjangoApp(Component):
         if self._get_confirm_from_user('Add a redis server?', default=False):
             self.redis = RedisCache()
             self.env.vars['CACHE_URL'] = self.redis.url
-        self.env.vars['DEBUG'] = 'False'
         if 'DEVMODE' in self.env.vars:
             self.env.vars['DEVMODE'] = 'False'
         # TODO: Set random secret key
+        self.env.vars['SECRET_KEY'] = secrets.token_urlsafe(32)
+        self.env.vars['DEBUG'] = 'False'
         self.env.edit()
 
     def _setup(self, **kwargs):
         super()._setup(**kwargs)
+        for cmd in self.NGINX_SETUP_COMMANDS:
+            Command(cmd).exec(self._ssh, obj=self)
         self._write_env()
         self._run_post_deploy_jobs()
         Command(self.GUNICORN_COMMANDS['restart']).exec(
@@ -417,6 +423,7 @@ class DjangoApp(Component):
             self._ssh, force=True, obj=self)
         command = Command(f'userdel -r {self.name}')
         command.exec(self._ssh, force=True)
+        self.env.edit()
         self._setup(force=True)
 
     def _get_wsgi_application(self):
